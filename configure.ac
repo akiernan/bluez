@@ -92,6 +92,12 @@ if (test "${enable_threads}" = "yes"); then
 fi
 
 PKG_CHECK_MODULES(DBUS, dbus-1 >= 1.10)
+AC_CHECK_LIB(
+	[mbedcrypto],
+	[mbedtls_ccm_init],
+	[MBEDTLS_LIBS="-lmbedcrypto"],
+	[AC_MSG_ERROR([Could not find mbed TLS.])])
+AC_SUBST([MBEDTLS_LIBS])
 
 AC_ARG_WITH([dbusconfdir], AS_HELP_STRING([--with-dbusconfdir=DIR],
 				[path to D-Bus configuration directory]),
