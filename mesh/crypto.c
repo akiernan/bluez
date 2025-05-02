@@ -17,6 +17,9 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <ell/ell.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/cmac.h>
+#include <mbedtls/ccm.h>
 
 #include "mesh/mesh-defs.h"
 #include "mesh/net.h"
@@ -28,51 +31,69 @@ static const uint8_t zero[16] = { 0, };
 static bool aes_ecb_one(const uint8_t key[16], const uint8_t in[16],
 								uint8_t out[16])
 {
-	void *cipher;
-	bool result = false;
+	mbedtls_aes_context ctx;
+	int ret;
 
-	cipher = l_cipher_new(L_CIPHER_AES, key, 16);
-
-	if (cipher) {
-		result = l_cipher_encrypt(cipher, in, out, 16);
-		l_cipher_free(cipher);
+	mbedtls_aes_init(&ctx);
+	ret = mbedtls_aes_setkey_enc(&ctx, key, 128);
+	if (ret != 0) {
+		mbedtls_aes_free(&ctx);
+		return false;
 	}
 
-	return result;
+	ret = mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, in, out);
+	mbedtls_aes_free(&ctx);
+
+	return ret == 0;
 }
 
-static bool aes_cmac(void *checksum, const uint8_t *msg,
+static bool aes_cmac(mbedtls_cipher_context_t *ctx, const uint8_t *msg,
 					size_t msg_len, uint8_t res[16])
 {
-	if (!l_checksum_update(checksum, msg, msg_len))
+	int ret = mbedtls_cipher_cmac_update(ctx, msg, msg_len);
+	if (ret != 0)
 		return false;
 
-	if (16 == l_checksum_get_digest(checksum, res, 16))
-		return true;
-
-	return false;
+	return mbedtls_cipher_cmac_finish(ctx, res) == 0;
 }
 
 static bool aes_cmac_one(const uint8_t key[16], const void *msg,
 					size_t msg_len, uint8_t res[16])
 {
-	void *checksum;
-	bool result;
+	mbedtls_cipher_context_t ctx;
+	const mbedtls_cipher_info_t *cipher_info;
+	int ret;
 
-	checksum = l_checksum_new_cmac_aes(key, 16);
-	if (!checksum)
+	mbedtls_cipher_init(&ctx);
+
+	cipher_info = mbedtls_cipher_info_from_type(MBEDTLS_CIPHER_AES_128_ECB);
+	if (!cipher_info) {
+		mbedtls_cipher_free(&ctx);
 		return false;
-
-	result = l_checksum_update(checksum, msg, msg_len);
-
-	if (result) {
-		ssize_t len = l_checksum_get_digest(checksum, res, 16);
-		result = (len == 16);
 	}
 
-	l_checksum_free(checksum);
+	ret = mbedtls_cipher_setup(&ctx, cipher_info);
+	if (ret != 0) {
+		mbedtls_cipher_free(&ctx);
+		return false;
+	}
 
-	return result;
+	ret = mbedtls_cipher_cmac_starts(&ctx, key, 128);
+	if (ret != 0) {
+		mbedtls_cipher_free(&ctx);
+		return false;
+	}
+
+	ret = mbedtls_cipher_cmac_update(&ctx, msg, msg_len);
+	if (ret != 0) {
+		mbedtls_cipher_free(&ctx);
+		return false;
+	}
+
+	ret = mbedtls_cipher_cmac_finish(&ctx, res);
+	mbedtls_cipher_free(&ctx);
+
+	return ret == 0;
 }
 
 bool mesh_crypto_aes_cmac(const uint8_t key[16], const uint8_t *msg,
@@ -86,17 +107,22 @@ bool mesh_crypto_aes_ccm_encrypt(const uint8_t nonce[13], const uint8_t key[16],
 					const void *msg, uint16_t msg_len,
 					void *out_msg, size_t mic_size)
 {
-	void *cipher;
-	bool result;
+	mbedtls_ccm_context ctx;
+	int ret;
 
-	cipher = l_aead_cipher_new(L_AEAD_CIPHER_AES_CCM, key, 16, mic_size);
+	mbedtls_ccm_init(&ctx);
+	ret = mbedtls_ccm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key, 128);
+	if (ret != 0) {
+		mbedtls_ccm_free(&ctx);
+		return false;
+	}
 
-	result = l_aead_cipher_encrypt(cipher, msg, msg_len, aad, aad_len,
-					nonce, 13, out_msg, msg_len + mic_size);
+	ret = mbedtls_ccm_encrypt_and_tag(&ctx, msg_len, nonce, 13, aad,
+					  aad_len, msg, out_msg, out_msg + msg_len,
+					  mic_size);
 
-	l_aead_cipher_free(cipher);
-
-	return result;
+	mbedtls_ccm_free(&ctx);
+	return ret == 0;
 }
 
 bool mesh_crypto_aes_ccm_decrypt(const uint8_t nonce[13], const uint8_t key[16],
@@ -105,17 +131,21 @@ bool mesh_crypto_aes_ccm_decrypt(const uint8_t nonce[13], const uint8_t key[16],
 				void *out_msg,
 				void *out_mic, size_t mic_size)
 {
-	void *cipher;
-	bool result;
+	mbedtls_ccm_context ctx;
+	int ret;
 	size_t out_msg_len = enc_msg_len - mic_size;
 
-	cipher = l_aead_cipher_new(L_AEAD_CIPHER_AES_CCM, key, 16, mic_size);
+	mbedtls_ccm_init(&ctx);
+	ret = mbedtls_ccm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key, 128);
+	if (ret != 0) {
+		mbedtls_ccm_free(&ctx);
+		return false;
+	}
 
-	result = l_aead_cipher_decrypt(cipher, enc_msg, enc_msg_len,
-							aad, aad_len, nonce, 13,
-							out_msg, out_msg_len);
+	ret = mbedtls_ccm_auth_decrypt(&ctx, out_msg_len, nonce, 13, aad, aad_len,
+				       enc_msg, out_msg, enc_msg + out_msg_len, mic_size);
 
-	if (result && out_mic) {
+	if (ret == 0 && out_mic) {
 		if (mic_size == 4)
 			*(uint32_t *)out_mic =
 				l_get_be32(enc_msg + enc_msg_len - mic_size);
@@ -124,9 +154,9 @@ bool mesh_crypto_aes_ccm_decrypt(const uint8_t nonce[13], const uint8_t key[16],
 				l_get_be64(enc_msg + enc_msg_len - mic_size);
 	}
 
-	l_aead_cipher_free(cipher);
+	mbedtls_ccm_free(&ctx);
 
-	return result;
+	return ret == 0;
 }
 
 bool mesh_crypto_k1(const uint8_t ikm[16], const uint8_t salt[16],
@@ -145,11 +175,13 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 							uint8_t enc_key[16],
 							uint8_t priv_key[16])
 {
-	void *checksum;
+	mbedtls_cipher_context_t checksum;
 	uint8_t output[16];
 	uint8_t t[16];
 	uint8_t *stage;
 	bool success = false;
+	const mbedtls_cipher_info_t *cipher_info;
+	int ret;
 
 	stage = l_malloc(sizeof(output) + p_len + 1);
 	if (!stage)
@@ -161,14 +193,23 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	if (!aes_cmac_one(stage, n, 16, t))
 		goto fail;
 
-	checksum = l_checksum_new_cmac_aes(t, 16);
-	if (!checksum)
+	cipher_info = mbedtls_cipher_info_from_type(MBEDTLS_CIPHER_AES_128_ECB);
+	if (!cipher_info)
 		goto fail;
+
+	mbedtls_cipher_init(&checksum);
+	ret = mbedtls_cipher_setup(&checksum, cipher_info);
+	if (ret != 0)
+		goto done;
+
+	ret = mbedtls_cipher_cmac_starts(&checksum, t, 128);
+	if (ret != 0)
+		goto done;
 
 	memcpy(stage, p, p_len);
 	stage[p_len] = 1;
 
-	if (!aes_cmac(checksum, stage, p_len + 1, output))
+	if (!aes_cmac(&checksum, stage, p_len + 1, output))
 		goto done;
 
 	net_id[0] = output[15] & 0x7f;
@@ -177,7 +218,7 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	memcpy(stage + 16, p, p_len);
 	stage[p_len + 16] = 2;
 
-	if (!aes_cmac(checksum, stage, p_len + 16 + 1, output))
+	if (!aes_cmac(&checksum, stage, p_len + 16 + 1, output))
 		goto done;
 
 	memcpy(enc_key, output, 16);
@@ -186,14 +227,14 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	memcpy(stage + 16, p, p_len);
 	stage[p_len + 16] = 3;
 
-	if (!aes_cmac(checksum, stage, p_len + 16 + 1, output))
+	if (!aes_cmac(&checksum, stage, p_len + 16 + 1, output))
 		goto done;
 
 	memcpy(priv_key, output, 16);
 	success = true;
 
 done:
-	l_checksum_free(checksum);
+	mbedtls_cipher_free(&checksum);
 fail:
 	l_free(stage);
 
@@ -1023,8 +1064,8 @@ static const uint8_t crypto_test_result[] = {
 
 bool mesh_crypto_check_avail(void)
 {
-	void *cipher;
-	bool result;
+	mbedtls_ccm_context ctx;
+	bool result = false;
 	uint8_t i;
 	union {
 		struct {
@@ -1043,22 +1084,20 @@ bool mesh_crypto_check_avail(void)
 		u.bytes[i] = 0x60 + i;
 	}
 
-	cipher = l_aead_cipher_new(L_AEAD_CIPHER_AES_CCM, u.crypto.key,
-				sizeof(u.crypto.key), sizeof(u.crypto.mic));
+	mbedtls_ccm_init(&ctx);
+	if (mbedtls_ccm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, u.crypto.key,
+			       128) != 0)
+		goto cleanup;
 
-	if (!cipher)
-		return false;
+	if (mbedtls_ccm_encrypt_and_tag(
+		    &ctx, sizeof(u.crypto.data), u.crypto.nonce, 13,
+		    u.crypto.aad, sizeof(u.crypto.aad), u.crypto.data, out_msg,
+		    out_msg + sizeof(u.crypto.data), 8) != 0)
+		goto cleanup;
 
-	result = l_aead_cipher_encrypt(cipher,
-				u.crypto.data, sizeof(u.crypto.data),
-				u.crypto.aad, sizeof(u.crypto.aad),
-				u.crypto.nonce, sizeof(u.crypto.nonce),
-				out_msg, sizeof(out_msg));
+	result = memcmp(out_msg, crypto_test_result, sizeof(out_msg)) == 0;
 
-	if (result)
-		result = !memcmp(out_msg, crypto_test_result, sizeof(out_msg));
-
-	l_aead_cipher_free(cipher);
-
+cleanup:
+	mbedtls_ccm_free(&ctx);
 	return result;
 }

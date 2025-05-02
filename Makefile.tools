@@ -399,13 +399,13 @@ tools_mesh_cfgclient_SOURCES = tools/mesh-cfgclient.c \
 				mesh/crypto.h mesh/crypto.c
 
 tools_mesh_cfgclient_LDADD = lib/libbluetooth-internal.la src/libshared-ell.la \
-						$(ell_ldadd) -ljson-c -lreadline
+						$(ell_ldadd) $(MBEDTLS_LIBS) -ljson-c -lreadline
 
 bin_PROGRAMS +=  tools/mesh-cfgtest
 
 tools_mesh_cfgtest_SOURCES = tools/mesh-cfgtest.c
 tools_mesh_cfgtest_LDADD = lib/libbluetooth-internal.la src/libshared-ell.la \
-						$(ell_ldadd)
+						$(ell_ldadd) $(MBEDTLS_LIBS)
 endif
 
 if DEPRECATED
@@ -581,7 +581,7 @@ noinst_PROGRAMS += tools/btpclient tools/btpclientctl
 
 tools_btpclient_SOURCES = tools/btpclient.c src/shared/btp.c src/shared/btp.h
 tools_btpclient_LDADD = lib/libbluetooth-internal.la \
-				src/libshared-ell.la $(ell_ldadd)
+				src/libshared-ell.la $(ell_ldadd) $(MBEDTLS_LIBS)
 tools/btpclient.$(OBJEXT): src/libshared-ell.la ell/internal
 
 tools_btpclientctl_SOURCES = tools/btpclientctl.c client/display.c
