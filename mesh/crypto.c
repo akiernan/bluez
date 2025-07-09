@@ -175,7 +175,7 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 							uint8_t enc_key[16],
 							uint8_t priv_key[16])
 {
-	mbedtls_cipher_context_t checksum;
+	mbedtls_cipher_context_t ctx, *checksum = &ctx;
 	uint8_t output[16];
 	uint8_t t[16];
 	uint8_t *stage;
@@ -197,19 +197,19 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	if (!cipher_info)
 		goto fail;
 
-	mbedtls_cipher_init(&checksum);
-	ret = mbedtls_cipher_setup(&checksum, cipher_info);
+	mbedtls_cipher_init(checksum);
+	ret = mbedtls_cipher_setup(checksum, cipher_info);
 	if (ret != 0)
 		goto done;
 
-	ret = mbedtls_cipher_cmac_starts(&checksum, t, 128);
+	ret = mbedtls_cipher_cmac_starts(checksum, t, 128);
 	if (ret != 0)
 		goto done;
 
 	memcpy(stage, p, p_len);
 	stage[p_len] = 1;
 
-	if (!aes_cmac(&checksum, stage, p_len + 1, output))
+	if (!aes_cmac(checksum, stage, p_len + 1, output))
 		goto done;
 
 	net_id[0] = output[15] & 0x7f;
@@ -218,7 +218,7 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	memcpy(stage + 16, p, p_len);
 	stage[p_len + 16] = 2;
 
-	if (!aes_cmac(&checksum, stage, p_len + 16 + 1, output))
+	if (!aes_cmac(checksum, stage, p_len + 16 + 1, output))
 		goto done;
 
 	memcpy(enc_key, output, 16);
@@ -227,14 +227,14 @@ bool mesh_crypto_k2(const uint8_t n[16], const uint8_t *p, size_t p_len,
 	memcpy(stage + 16, p, p_len);
 	stage[p_len + 16] = 3;
 
-	if (!aes_cmac(&checksum, stage, p_len + 16 + 1, output))
+	if (!aes_cmac(checksum, stage, p_len + 16 + 1, output))
 		goto done;
 
 	memcpy(priv_key, output, 16);
 	success = true;
 
 done:
-	mbedtls_cipher_free(&checksum);
+	mbedtls_cipher_free(checksum);
 fail:
 	l_free(stage);
 
